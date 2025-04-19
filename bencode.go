@@ -80,15 +80,12 @@ func decoderHandleInt(data []byte) ([]byte, any, error) {
 	}
 	data = data[1:]
 
-	iVal, err := strconv.ParseInt(iStr, 10, 64)
+	iVal, err := strconv.ParseInt("-"+iStr, 10, 64)
 	if err != nil {
 		return nil, nil, errors.New("unable to parse the integer")
 	}
 	i = int(iVal)
 
-	if isINeg {
-		i = -i
-	}
 	return data, i, nil
 }
 
