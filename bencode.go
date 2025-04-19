@@ -42,7 +42,7 @@ func decodeString(data []byte) ([]byte, any, error) {
 
 func decodeInt(data []byte) ([]byte, any, error) {
 	var i int
-	var isINeg bool
+	isINeg := false
 
 	if len(data) == 0 || data[0] != 0x69 {
 		return nil, nil, errors.New("missing i in the front of the integer")
@@ -130,6 +130,7 @@ func decodeDictionary(data []byte) ([]byte, any, error) {
 	d := make(map[string]any)
 
 	lastKey := ""
+	isLastKeyInit := false
 
 	if len(data) > 0 && data[0] == 0x65 {
 		data = data[1:]
@@ -153,10 +154,14 @@ func decodeDictionary(data []byte) ([]byte, any, error) {
 			if _, ok := d[string(a)]; ok {
 				return nil, nil, errors.New("duplicate keys in dictionary")
 			}
-			if bytes.Compare(a, []byte(lastKey)) != 1 {
-				return nil, nil, errors.New("keys are not in sorted order")
+
+			if isLastKeyInit {
+				if bytes.Compare([]byte(lastKey), a) >= 0 {
+					return nil, nil, errors.New("keys are not in sorted order")
+				}
 			}
 			lastKey = string(a)
+			isLastKeyInit = true
 
 			if len(data) == 0 {
 				return nil, nil, errors.New("missing value of key in dictionary")
@@ -190,7 +195,7 @@ func decodeValue(data []byte) ([]byte, any, error) {
 	} else if data[0] == 0x64 {
 		return decodeDictionary(data)
 	} else {
-		return nil, nil, errors.New("invaild data")
+		return nil, nil, errors.New("invalid data")
 	}
 }
 
