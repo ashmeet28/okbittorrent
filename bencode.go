@@ -19,7 +19,8 @@ func decoderHandleString(data []byte) ([]byte, any, error) {
 
 	if len(strSizeString) == 0 {
 		return nil, nil, errors.New("unable to decode the size of the string")
-	} else if len(data) == 0 || data[0] != 0x3a {
+	}
+	if len(data) == 0 || data[0] != 0x3a {
 		return nil, nil, errors.New("missing colon after the string size")
 	}
 	data = data[1:]
@@ -62,11 +63,11 @@ func decoderHandleInt(data []byte) ([]byte, any, error) {
 			i = 0
 			data = data[1:]
 			return data, i, nil
-		} else if len(data) > 0 && data[0] >= 0x30 && data[0] <= 0x39 {
-			return nil, nil, errors.New("leading zero in the front of the integer")
-		} else {
-			return nil, nil, errors.New("missing e in the end of the integer")
 		}
+		if len(data) > 0 && data[0] >= 0x30 && data[0] <= 0x39 {
+			return nil, nil, errors.New("leading zero in the front of the integer")
+		}
+		return nil, nil, errors.New("missing e in the end of the integer")
 	}
 
 	var iStr string
@@ -150,9 +151,8 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 			}
 			if bytes.Compare(a, []byte(lastKey)) != 1 {
 				return nil, nil, errors.New("keys are not in sorted order")
-			} else {
-				lastKey = string(a)
 			}
+			lastKey = string(a)
 
 			if len(data) == 0 {
 				return nil, nil, errors.New("missing value of key in dictionary")
@@ -165,7 +165,7 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 
 			d[string(a)] = v
 		} else {
-			return nil, nil, errors.New("invalid dictionary key")
+			return nil, nil, errors.New("dictionary key is not a string")
 		}
 
 		if len(data) > 0 && data[0] == 0x65 {
