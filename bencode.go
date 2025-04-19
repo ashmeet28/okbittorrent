@@ -81,7 +81,11 @@ func decoderHandleInt(data []byte) ([]byte, any, error) {
 	}
 	data = data[1:]
 
-	iVal, err := strconv.ParseInt("-"+iStr, 10, 64)
+	if isINeg {
+		iStr = "-" + iStr
+	}
+
+	iVal, err := strconv.ParseInt(iStr, 10, 64)
 	if err != nil {
 		return nil, nil, errors.New("unable to parse the integer")
 	}
