@@ -58,7 +58,7 @@ func decoderHandleInt(data []byte) ([]byte, any, error) {
 		data = data[1:]
 		if len(data) > 0 && data[0] == 0x65 {
 			if isINeg {
-				return nil, nil, errors.New("found negative zero")
+				return nil, nil, errors.New("encountered negative zero")
 			}
 			i = 0
 			data = data[1:]
