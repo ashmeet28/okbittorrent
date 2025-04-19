@@ -10,7 +10,7 @@ func BencodeEncode(v any) []byte {
 	return make([]byte, 0)
 }
 
-func decoderHandleString(data []byte) ([]byte, any, error) {
+func decodeString(data []byte) ([]byte, any, error) {
 	var strSizeString string
 	for len(data) > 0 && data[0] >= 0x30 && data[0] <= 0x39 {
 		strSizeString = strSizeString + string([]byte{data[0]})
@@ -40,7 +40,7 @@ func decoderHandleString(data []byte) ([]byte, any, error) {
 	return data, s, nil
 }
 
-func decoderHandleInt(data []byte) ([]byte, any, error) {
+func decodeInt(data []byte) ([]byte, any, error) {
 	var i int
 	var isINeg bool
 
@@ -94,7 +94,7 @@ func decoderHandleInt(data []byte) ([]byte, any, error) {
 	return data, i, nil
 }
 
-func decoderHandleList(data []byte) ([]byte, any, error) {
+func decodeList(data []byte) ([]byte, any, error) {
 	if len(data) == 0 || data[0] != 0x6c {
 		return nil, nil, errors.New("missing l in the front of the list")
 	}
@@ -107,7 +107,7 @@ func decoderHandleList(data []byte) ([]byte, any, error) {
 	}
 
 	for len(data) > 0 {
-		dataLeft, v, err := decoderHandleValue(data)
+		dataLeft, v, err := decodeValue(data)
 		data = dataLeft
 		if err != nil {
 			return data, v, err
@@ -121,7 +121,7 @@ func decoderHandleList(data []byte) ([]byte, any, error) {
 	return nil, nil, errors.New("missing e in the end of the list")
 }
 
-func decoderHandleDictionary(data []byte) ([]byte, any, error) {
+func decodeDictionary(data []byte) ([]byte, any, error) {
 	if len(data) == 0 || data[0] != 0x64 {
 		return nil, nil, errors.New("missing d in the front of the dictionary")
 	}
@@ -137,7 +137,7 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 	}
 
 	for len(data) > 0 {
-		dataLeft, k, err := decoderHandleValue(data)
+		dataLeft, k, err := decodeValue(data)
 		data = dataLeft
 		if err != nil {
 			return data, k, err
@@ -161,7 +161,7 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 			if len(data) == 0 {
 				return nil, nil, errors.New("missing value of key in dictionary")
 			}
-			dataLeft, v, err := decoderHandleValue(data)
+			dataLeft, v, err := decodeValue(data)
 			data = dataLeft
 			if err != nil {
 				return data, v, err
@@ -180,15 +180,15 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 	return nil, nil, errors.New("missing e in the end of the dictionary")
 }
 
-func decoderHandleValue(data []byte) ([]byte, any, error) {
+func decodeValue(data []byte) ([]byte, any, error) {
 	if data[0] >= 0x30 && data[0] <= 0x39 {
-		return decoderHandleString(data)
+		return decodeString(data)
 	} else if data[0] == 0x69 {
-		return decoderHandleInt(data)
+		return decodeInt(data)
 	} else if data[0] == 0x6c {
-		return decoderHandleList(data)
+		return decodeList(data)
 	} else if data[0] == 0x64 {
-		return decoderHandleDictionary(data)
+		return decodeDictionary(data)
 	} else {
 		return nil, nil, errors.New("invaild data")
 	}
@@ -198,7 +198,7 @@ func BencodeDecode(data []byte) (int, any, error) {
 	if len(data) == 0 {
 		return len(data), nil, errors.New("no data to decode")
 	} else {
-		dataLeft, v, err := decoderHandleValue(data)
+		dataLeft, v, err := decodeValue(data)
 		return len(data) - len(dataLeft), v, err
 	}
 }
