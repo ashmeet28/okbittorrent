@@ -148,10 +148,6 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 						errors.New("only printable ascii characters are allowed in dictionary key")
 				}
 			}
-
-			if len(data) == 0 {
-				return nil, nil, errors.New("missing value of key in dictionary")
-			}
 			if _, ok := d[string(a)]; ok {
 				return nil, nil, errors.New("duplicate keys in dictionary")
 			}
@@ -161,6 +157,9 @@ func decoderHandleDictionary(data []byte) ([]byte, any, error) {
 				lastKey = string(a)
 			}
 
+			if len(data) == 0 {
+				return nil, nil, errors.New("missing value of key in dictionary")
+			}
 			dataLeft, v, err := decoderHandleValue(data)
 			data = dataLeft
 			if err != nil {
