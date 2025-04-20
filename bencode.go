@@ -152,28 +152,28 @@ func decodeDictionary(data []byte) (any, []byte, error) {
 	isLastKeyInit := false
 
 	for len(data) > 0 {
-		k, dataLeft, err := decodeValue(data)
+		v, dataLeft, err := decodeValue(data)
 		if err != nil {
-			return k, dataLeft, err
+			return v, dataLeft, err
 		}
 		data = dataLeft
 
-		if a, ok := k.([]byte); ok {
-			for _, c := range a {
+		if k, ok := v.([]byte); ok {
+			for _, c := range k {
 				if c < 0x20 || c > 0x7e {
 					return nil, nil,
 						errors.New("only printable ascii characters are allowed in the key")
 				}
 			}
-			if _, ok := d[string(a)]; ok {
+			if _, ok := d[string(k)]; ok {
 				return nil, nil, errors.New("duplicate keys")
 			}
 			if isLastKeyInit {
-				if bytes.Compare([]byte(lastKey), a) >= 0 {
+				if bytes.Compare([]byte(lastKey), k) >= 0 {
 					return nil, nil, errors.New("keys are not in sorted order")
 				}
 			}
-			lastKey = string(a)
+			lastKey = string(k)
 			isLastKeyInit = true
 
 			if len(data) == 0 {
@@ -185,7 +185,7 @@ func decodeDictionary(data []byte) (any, []byte, error) {
 			}
 			data = dataLeft
 
-			d[string(a)] = v
+			d[string(k)] = v
 		} else {
 			return nil, nil, errors.New("key is not a string")
 		}
