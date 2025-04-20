@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"math"
 	"strconv"
 )
 
@@ -10,151 +11,163 @@ func BencodeEncode(v any) []byte {
 	return make([]byte, 0)
 }
 
-func decodeString(data []byte) ([]byte, any, error) {
-	var strSizeString string
-	for len(data) > 0 && data[0] >= 0x30 && data[0] <= 0x39 {
-		strSizeString = strSizeString + string([]byte{data[0]})
-		data = data[1:]
+func decodeString(data []byte) (any, []byte, error) {
+	if len(data) < 2 {
+		return nil, nil, errors.New("buffer too small")
 	}
 
-	if len(strSizeString) == 0 {
-		return nil, nil, errors.New("unable to decode the size of the string")
+	colonIndex := bytes.IndexByte(data[1:], 0x3a)
+	if colonIndex == -1 {
+		return nil, nil, errors.New("':' not found")
 	}
-	if len(data) == 0 || data[0] != 0x3a {
-		return nil, nil, errors.New("missing colon after the string size")
-	}
-	data = data[1:]
+	colonIndex += 1
 
-	strSize, err := strconv.ParseInt(strSizeString, 10, 64)
+	for _, b := range data[:colonIndex] {
+		if b < 0x30 || b > 0x39 {
+			return nil, nil, errors.New("unable to parse the size")
+		}
+	}
+
+	if data[0] == 0x30 && colonIndex != 1 {
+		return nil, nil, errors.New("leading zeros are not allowed in the size")
+	}
+
+	l, err := strconv.ParseInt(string(data[:colonIndex]), 10, 64)
 	if err != nil {
-		return nil, nil, errors.New("unable to parse the size of the string")
+		return nil, nil, err
 	}
 
-	if len(data) < int(strSize) {
-		return nil, nil, errors.New("size of the string is invalid")
+	data = data[colonIndex+1:]
+	if l > math.MaxInt || int(l) > len(data) {
+		return nil, nil, errors.New("given size exceeds buffer length")
 	}
 
-	s := make([]byte, int(strSize))
+	s := make([]byte, l)
 	copy(s, data)
-	data = data[strSize:]
-	return data, s, nil
+	return s, data[l:], nil
 }
 
-func decodeInt(data []byte) ([]byte, any, error) {
-	var i int
-	isINeg := false
+func decodeInt64(data []byte) (any, []byte, error) {
+	if len(data) < 3 {
+		return nil, nil, errors.New("buffer too small")
+	}
 
-	if len(data) == 0 || data[0] != 0x69 {
-		return nil, nil, errors.New("missing i in the front of the integer")
+	if data[0] != 0x69 {
+		return nil, nil, errors.New("'i' not found at the start of the buffer")
 	}
 	data = data[1:]
 
-	if len(data) > 0 && data[0] == 0x2d {
-		isINeg = true
-		data = data[1:]
+	eIndex := bytes.IndexByte(data[1:], 0x65)
+	if eIndex == -1 {
+		return nil, nil, errors.New("'e' not found")
 	}
+	eIndex += 1
 
-	if len(data) > 0 && data[0] == 0x30 {
-		data = data[1:]
-		if len(data) > 0 && data[0] == 0x65 {
-			if isINeg {
-				return nil, nil, errors.New("encountered negative zero")
+	if data[0] == 0x2d {
+		if eIndex < 2 {
+			return nil, nil, errors.New("unable to parse the value")
+		}
+		for _, b := range data[1:eIndex] {
+			if b < 0x30 || b > 0x39 {
+				return nil, nil, errors.New("unable to parse the value")
 			}
-			i = 0
-			data = data[1:]
-			return data, i, nil
 		}
-		if len(data) > 0 && data[0] >= 0x30 && data[0] <= 0x39 {
-			return nil, nil, errors.New("leading zero in the front of the integer")
+	} else {
+		for _, b := range data[:eIndex] {
+			if b < 0x30 || b > 0x39 {
+				return nil, nil, errors.New("unable to parse the value")
+			}
 		}
-		return nil, nil, errors.New("missing e in the end of the integer")
 	}
 
-	var iStr string
-	for len(data) > 0 && data[0] >= 0x30 && data[0] <= 0x39 {
-		iStr = iStr + string([]byte{data[0]})
-		data = data[1:]
-	}
-
-	if len(data) == 0 || data[0] != 0x65 {
-		return nil, nil, errors.New("missing e in the end of the integer")
-	}
-	data = data[1:]
-
-	if isINeg {
-		iStr = "-" + iStr
-	}
-
-	iVal, err := strconv.ParseInt(iStr, 10, 64)
+	v, err := strconv.ParseInt(string(data[:eIndex]), 10, 64)
 	if err != nil {
-		return nil, nil, errors.New("unable to parse the integer")
+		return nil, nil, err
 	}
-	i = int(iVal)
 
-	return data, i, nil
+	if data[0] == 0x2d {
+		if data[1] == 0x30 {
+			return nil, nil, errors.New("leading zeros are not allowed after a minus sign")
+		}
+	} else if data[0] == 0x30 && eIndex != 1 {
+		return nil, nil, errors.New("leading zeros are not allowed")
+	}
+
+	return v, data[eIndex+1:], nil
 }
 
-func decodeList(data []byte) ([]byte, any, error) {
-	if len(data) == 0 || data[0] != 0x6c {
-		return nil, nil, errors.New("missing l in the front of the list")
+func decodeList(data []byte) (any, []byte, error) {
+	if len(data) < 2 {
+		return nil, nil, errors.New("buffer too small")
+	}
+
+	if data[0] != 0x6c {
+		return nil, nil, errors.New("'l' not found at the start of the buffer")
 	}
 	data = data[1:]
 
 	var l []any
-	if len(data) > 0 && data[0] == 0x65 {
+
+	if data[1] == 0x65 {
 		data = data[1:]
-		return data, l, nil
+		return l, data, nil
 	}
 
 	for len(data) > 0 {
-		dataLeft, v, err := decodeValue(data)
-		data = dataLeft
+		v, dataLeft, err := decodeValue(data)
 		if err != nil {
-			return data, v, err
+			return v, dataLeft, err
 		}
+
+		data = dataLeft
 		l = append(l, v)
+
 		if len(data) > 0 && data[0] == 0x65 {
 			data = data[1:]
-			return data, l, nil
+			return l, data, nil
 		}
 	}
-	return nil, nil, errors.New("missing e in the end of the list")
+
+	return nil, nil, errors.New("'e' not found")
 }
 
-func decodeDictionary(data []byte) ([]byte, any, error) {
-	if len(data) == 0 || data[0] != 0x64 {
-		return nil, nil, errors.New("missing d in the front of the dictionary")
+func decodeDictionary(data []byte) (any, []byte, error) {
+	if len(data) < 2 {
+		return nil, nil, errors.New("buffer too small")
+	}
+
+	if data[0] != 0x64 {
+		return nil, nil, errors.New("'d' not found at the start of the buffer")
 	}
 	data = data[1:]
 
 	d := make(map[string]any)
 
+	if data[1] == 0x65 {
+		data = data[1:]
+		return d, data, nil
+	}
+
 	lastKey := ""
 	isLastKeyInit := false
 
-	if len(data) > 0 && data[0] == 0x65 {
-		data = data[1:]
-		return data, d, nil
-	}
-
 	for len(data) > 0 {
-		dataLeft, k, err := decodeValue(data)
-		data = dataLeft
+		k, dataLeft, err := decodeValue(data)
 		if err != nil {
-			return data, k, err
+			return k, dataLeft, err
 		}
+		data = dataLeft
 
 		if a, ok := k.([]byte); ok {
 			for _, c := range a {
 				if c < 0x20 || c > 0x7e {
 					return nil, nil,
-						errors.New("only printable ascii characters are allowed in dictionary key")
+						errors.New("only printable ascii characters are allowed in the key")
 				}
 			}
 			if _, ok := d[string(a)]; ok {
-				return nil, nil, errors.New("duplicate keys in dictionary")
+				return nil, nil, errors.New("duplicate keys")
 			}
-
 			if isLastKeyInit {
 				if bytes.Compare([]byte(lastKey), a) >= 0 {
 					return nil, nil, errors.New("keys are not in sorted order")
@@ -164,32 +177,36 @@ func decodeDictionary(data []byte) ([]byte, any, error) {
 			isLastKeyInit = true
 
 			if len(data) == 0 {
-				return nil, nil, errors.New("missing value of key in dictionary")
+				return nil, nil, errors.New("value of key not found")
 			}
-			dataLeft, v, err := decodeValue(data)
-			data = dataLeft
+			v, dataLeft, err := decodeValue(data)
 			if err != nil {
-				return data, v, err
+				return v, dataLeft, err
 			}
+			data = dataLeft
 
 			d[string(a)] = v
 		} else {
-			return nil, nil, errors.New("dictionary key is not a string")
+			return nil, nil, errors.New("key is not a string")
 		}
 
 		if len(data) > 0 && data[0] == 0x65 {
 			data = data[1:]
-			return data, d, nil
+			return d, data, nil
 		}
 	}
-	return nil, nil, errors.New("missing e in the end of the dictionary")
+	return nil, nil, errors.New("'e' not found")
 }
 
-func decodeValue(data []byte) ([]byte, any, error) {
+func decodeValue(data []byte) (any, []byte, error) {
+	if len(data) == 0 {
+		return nil, nil, errors.New("no data to decode")
+	}
+
 	if data[0] >= 0x30 && data[0] <= 0x39 {
 		return decodeString(data)
 	} else if data[0] == 0x69 {
-		return decodeInt(data)
+		return decodeInt64(data)
 	} else if data[0] == 0x6c {
 		return decodeList(data)
 	} else if data[0] == 0x64 {
@@ -199,11 +216,6 @@ func decodeValue(data []byte) ([]byte, any, error) {
 	}
 }
 
-func BencodeDecode(data []byte) (int, any, error) {
-	if len(data) == 0 {
-		return len(data), nil, errors.New("no data to decode")
-	} else {
-		dataLeft, v, err := decodeValue(data)
-		return len(data) - len(dataLeft), v, err
-	}
+func BencodeDecode(data []byte) (any, []byte, error) {
+	return decodeValue(data)
 }

@@ -1,7 +1,11 @@
 package main
 
-import "fmt"
+import (
+	"fmt"
+	"os"
+)
 
 func main() {
-	fmt.Println(BencodeDecode([]byte("l4:spam4:egg")))
+	data, _ := os.ReadFile(os.Args[1])
+	fmt.Println(BencodeDecode(data))
 }
