@@ -4,11 +4,116 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"slices"
 	"strconv"
 )
 
-func BencodeEncode(v any) []byte {
-	return make([]byte, 0)
+func encodeValue(v any) ([]byte, error) {
+	switch v.(type) {
+	case map[string]any:
+		return encodeDictionary(v)
+	case []any:
+		return encodeList(v)
+	case int64:
+		return encodeInt64(v)
+	case []byte:
+		return encodeString(v)
+	default:
+		return nil, errors.New("invalid value")
+	}
+}
+
+func encodeString(v any) ([]byte, error) {
+	s, ok := v.([]byte)
+	if !ok {
+		return nil, errors.New("invalid value")
+	}
+
+	var data []byte
+
+	data = append(data, []byte(strconv.FormatInt(int64(len(s)), 10))...)
+	data = append(data, 0x3a)
+	data = append(data, s...)
+
+	return data, nil
+}
+
+func encodeInt64(v any) ([]byte, error) {
+	i, ok := v.(int64)
+	if !ok {
+		return nil, errors.New("invalid value")
+	}
+
+	var data []byte
+
+	data = append(data, 0x69)
+	data = append(data, []byte(strconv.FormatInt(i, 10))...)
+	data = append(data, 0x65)
+
+	return data, nil
+}
+
+func encodeList(v any) ([]byte, error) {
+	l, ok := v.([]any)
+	if !ok {
+		return nil, errors.New("invalid value")
+	}
+
+	var data []byte
+
+	data = append(data, 0x6c)
+	for _, v := range l {
+		valueData, err := encodeValue(v)
+		if err != nil {
+			return valueData, err
+		}
+		data = append(data, valueData...)
+	}
+	data = append(data, 0x65)
+
+	return data, nil
+}
+
+func encodeDictionary(v any) ([]byte, error) {
+	d, ok := v.(map[string]any)
+	if !ok {
+		return nil, errors.New("invalid value")
+	}
+
+	var data []byte
+
+	data = append(data, 0x64)
+	var keys []string
+	for k := range d {
+		for _, c := range k {
+			if c < 0x20 || c > 0x7e {
+				return nil, errors.New("only printable ascii characters are allowed in the key")
+			}
+		}
+		keys = append(keys, k)
+	}
+	slices.SortFunc(keys, func(a, b string) int {
+		return bytes.Compare([]byte(a), []byte(b))
+	})
+	for _, k := range keys {
+		if valueData, err := encodeValue([]byte(k)); err == nil {
+			data = append(data, valueData...)
+		} else {
+			return valueData, err
+		}
+		if valueData, err := encodeValue(d[k]); err == nil {
+			data = append(data, valueData...)
+		} else {
+			return valueData, err
+		}
+	}
+	data = append(data, 0x65)
+
+	return data, nil
+}
+
+func BencodeEncode(v any) ([]byte, error) {
+	return encodeValue(v)
 }
 
 func decodeString(data []byte) (any, []byte, error) {
