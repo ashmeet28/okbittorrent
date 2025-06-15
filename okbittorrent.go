@@ -1,19 +1,37 @@
 package main
 
 import (
+	"crypto/rand"
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 func main() {
+	infoDict := getInfoDictUsingDotTorrentFileArg()
+
+	infoHash := getSHA1SumOfInfoDict(infoDict)
+
+	peersIPAddrs := getPeersUsingTrackerURLArg(infoHash)
+
+	for _, peersIPAddr := range peersIPAddrs {
+		_, err := tryToHandshake(infoHash, peersIPAddr)
+		if err == nil {
+			break
+		}
+	}
+}
+
+func getInfoDictUsingDotTorrentFileArg() map[string]any {
 	torrentFileData, err := os.ReadFile(os.Args[1])
 	if err != nil {
 		log.Fatal(err)
@@ -21,12 +39,12 @@ func main() {
 
 	rootDictInterface, _, err := BencodeDecode(torrentFileData)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
 
 	rootDict, ok := rootDictInterface.(map[string]any)
 	if !ok {
-		log.Fatalln(errors.New("invalid data inside torrent file"))
+		log.Fatal(errors.New("invalid data inside torrent file"))
 	}
 
 	infoDict, ok := rootDict["info"].(map[string]any)
@@ -34,15 +52,17 @@ func main() {
 		log.Fatal(errors.New("info dict not found"))
 	}
 
-	infoDictData, err := BencodeEncode(infoDict)
+	return infoDict
+}
 
+func getSHA1SumOfInfoDict(infoDict map[string]any) []byte {
+	infoDictData, err := BencodeEncode(infoDict)
 	if err != nil {
-		log.Fatalln(errors.New("internal error"))
+		log.Fatal(errors.New("internal error"))
 	}
 
 	s := sha1.Sum((infoDictData))
-	fmt.Println(sliceToEscapedQuery(s[:]))
-	fmt.Println(getPeersFromTracker(s[:]))
+	return s[:]
 }
 
 func sliceToEscapedQuery(d []byte) string {
@@ -54,38 +74,48 @@ func sliceToEscapedQuery(d []byte) string {
 	return es
 }
 
-func getPeersFromTracker(infoHash []byte) []string {
-	resp, err := http.Get(os.Args[2] +
-		"/?info_hash=" + sliceToEscapedQuery(infoHash))
+func getPeersUsingTrackerURLArg(infoHash []byte) []string {
+	urlWithQuery := os.Args[2] +
+		"/?info_hash=" + sliceToEscapedQuery(infoHash)
+	fmt.Println("connecting to tracker [" + urlWithQuery + "]")
+
+	resp, err := http.Get(urlWithQuery)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
+
 	if resp.StatusCode != http.StatusOK {
-		log.Fatalln("unable to get data from tracker")
+		log.Fatal("unable to get data from tracker")
 	}
-	b, err := io.ReadAll(resp.Body)
+
+	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
-	rootDictInterface, _, err := BencodeDecode(b)
+
+	rootDictInterface, _, err := BencodeDecode(respBody)
 	if err != nil {
-		log.Fatalln(err)
+		log.Fatal(err)
 	}
+
 	rootDict, ok := rootDictInterface.(map[string]any)
 	if !ok {
-		log.Fatalln(errors.New("invalid data returned from tracker"))
+		log.Fatal(errors.New("invalid data returned from tracker"))
 	}
+
 	peersInterface, ok := rootDict["peers"]
 	if !ok {
-		log.Fatalln(errors.New("peers not found in tracker response"))
+		log.Fatal(errors.New("peers not found in tracker response"))
 	}
+
 	peersCompact, ok := peersInterface.([]byte)
 	if !ok {
-		log.Fatalln(errors.New("peers not found in tracker response"))
+		log.Fatal(errors.New("peers not found in tracker response"))
 	}
-	var peers []string
+
+	var peersIPAddrs []string
 	for i := 0; (i + 6) <= len(peersCompact); i += 6 {
-		peers = append(peers,
+		peersIPAddrs = append(peersIPAddrs,
 			strconv.FormatInt(int64(peersCompact[i]), 10)+"."+
 				strconv.FormatInt(int64(peersCompact[i+1]), 10)+"."+
 				strconv.FormatInt(int64(peersCompact[i+2]), 10)+"."+
@@ -93,5 +123,37 @@ func getPeersFromTracker(infoHash []byte) []string {
 				strconv.FormatInt((int64(peersCompact[i+4])*256)+
 					int64(peersCompact[i+5]), 10))
 	}
-	return peers
+	return peersIPAddrs
+}
+
+func tryToHandshake(infoHash []byte, peerIPAddr string) (net.Conn, error) {
+	fmt.Println("connecting to " + peerIPAddr)
+
+	conn, err := net.DialTimeout("tcp", peerIPAddr, time.Second*5)
+	if err != nil {
+		fmt.Println(errors.New("error while connecting to peer"))
+		return conn, err
+	}
+
+	conn.Write([]byte{19})
+	conn.Write([]byte("BitTorrent protocol"))
+	conn.Write(make([]byte, 8))
+	conn.Write(infoHash)
+
+	peerId := make([]byte, 20)
+	rand.Read(peerId)
+	conn.Write(peerId)
+
+	conn.Write([]byte{0, 0, 0, 1, 1})
+	conn.Write([]byte{0, 0, 0, 1, 2})
+
+	for {
+		b := make([]byte, 8)
+		n, err := conn.Read(b)
+		if err != nil {
+			fmt.Println(errors.New("error while handshaking"))
+			return conn, err
+		}
+		fmt.Println(b[:n])
+	}
 }
