@@ -1,6 +1,10 @@
 package main
 
-import "sync"
+import (
+	"errors"
+	"log"
+	"os"
+)
 
 type torrentInfo struct {
 }
@@ -16,30 +20,45 @@ var torrentNewPeers chan torrentPeer
 
 var torrentNewTrackers chan string
 
-type SafeCounter struct {
-	mu sync.Mutex
-	v  map[string]int
+func infoDictIsValid(map[string]any) bool {
+	return false
 }
-
-func (c *SafeCounter) Inc(key string) {
-	c.mu.Lock()
-	c.v[key]++
-	c.mu.Unlock()
-}
-
-func (c *SafeCounter) Value(key string) int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.v[key]
-}
-
-func (c *SafeCounter) Dec(key string) {
-	c.mu.Lock()
-	c.v[key]--
-	c.mu.Unlock()
-}
-
-var connectionCounter SafeCounter
 
 func main() {
+	magneticLink := os.Args[1]
+	torrentFilePath := os.Args[2]
+	downloadDirectoryPath := os.Args[3]
+	extraTrackersFilePath := os.Args[4]
+	extraPeersFilePath := os.Args[5]
+
+	if magneticLink != "-" && torrentFilePath == "-" {
+
+	} else if magneticLink == "-" && torrentFilePath != "-" {
+		torrentFileData, err := os.ReadFile(torrentFilePath)
+		if err != nil {
+			log.Fatalln(errors.New("unable to read torrent file"))
+		}
+
+		torrentBencode, torrentFileExtraData, err :=
+			BencodeDecode(torrentFileData)
+		if len(torrentFileExtraData) != 0 {
+			log.Fatalln(errors.New("extra data in torrent file"))
+		}
+		if err != nil {
+			log.Fatalln(errors.New("unable to decode torrent file"))
+		}
+
+		benRootDict, ok := torrentBencode.(map[string]any)
+		if !ok {
+			log.Fatalln(errors.New("invalid bencode format"))
+		}
+
+		benInfoDict, ok := benRootDict["info"].(map[string]any)
+		if !ok {
+			log.Fatalln(
+				errors.New("unable to find info dictionary in torrent file"))
+		}
+	} else {
+		log.Fatalln(errors.New("invalid arguments"))
+	}
 }
