@@ -9,13 +9,13 @@ import (
 )
 
 var torrentInfo struct {
-	dictSHA1Hash     []byte
-	name             string
-	pieceLength      int
-	piecesSHA1Hashes [][]byte
-	isSingleFile     bool
-	fileLength       int
-	files            []struct {
+	infoDictHash []byte
+	name         string
+	pieceLength  int
+	pieceHashes  [][]byte
+	isSingleFile bool
+	fileLength   int
+	files        []struct {
 		fileLength int
 		filePath   string
 	}
@@ -48,7 +48,7 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 
 	benBufSHA1Sum := sha1.Sum(benBuf)
 
-	torrentInfo.dictSHA1Hash = benBufSHA1Sum[:]
+	torrentInfo.infoDictHash = benBufSHA1Sum[:]
 
 	benName, ok := benInfo["name"].([]byte)
 	if !ok {
@@ -64,7 +64,7 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 		log.Fatalln(errors.New("unable to get piece length"))
 	}
 	if benPieceLength < 1 || benPieceLength > 1_000_000_000 {
-		log.Fatalln(errors.New("invaild piece length"))
+		log.Fatalln(errors.New("invalid piece length"))
 	}
 	torrentInfo.pieceLength = int(benPieceLength)
 
@@ -74,11 +74,11 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	}
 
 	if len(benPieces) == 0 || (len(benPieces)%20) != 0 {
-		log.Fatalln(errors.New("invaild pieces"))
+		log.Fatalln(errors.New("invalid pieces"))
 	}
 
 	for i := 0; i < len(benPieces); i += 20 {
-		torrentInfo.piecesSHA1Hashes = append(torrentInfo.piecesSHA1Hashes,
+		torrentInfo.pieceHashes = append(torrentInfo.pieceHashes,
 			benPieces[i:i+20])
 	}
 
@@ -87,7 +87,7 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 		log.Fatalln(errors.New("unable to get length"))
 	}
 	if benLength < 1 || benLength > 1_000_000_000_000 {
-		log.Fatalln(errors.New("invaild length"))
+		log.Fatalln(errors.New("invalid length"))
 	}
 	torrentInfo.fileLength = int(benLength)
 
