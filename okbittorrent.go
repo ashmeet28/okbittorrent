@@ -3,7 +3,6 @@ package main
 import (
 	"crypto/sha1"
 	"errors"
-	"fmt"
 	"log"
 	"os"
 	"sync"
@@ -53,7 +52,7 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 
 	benName, ok := benInfo["name"].([]byte)
 	if !ok {
-		log.Fatalln(errors.New("unable to get name from info dictionary"))
+		log.Fatalln(errors.New("unable to get name"))
 	}
 
 	// TODO: Validate name string
@@ -62,11 +61,39 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 
 	benPieceLength, ok := benInfo["piece length"].(int64)
 	if !ok {
-		log.Fatalln(errors.New("unable to get piece length from info dictionary"))
+		log.Fatalln(errors.New("unable to get piece length"))
+	}
+	if benPieceLength < 1 || benPieceLength > 1_000_000_000 {
+		log.Fatalln(errors.New("invaild piece length"))
 	}
 	torrentInfo.pieceLength = int(benPieceLength)
 
-	fmt.Println(torrentInfo)
+	benPieces, ok := benInfo["pieces"].([]byte)
+	if !ok {
+		log.Fatalln(errors.New("unable to get pieces"))
+	}
+
+	if len(benPieces) == 0 || (len(benPieces)%20) != 0 {
+		log.Fatalln(errors.New("invaild pieces"))
+	}
+
+	for i := 0; i < len(benPieces); i += 20 {
+		torrentInfo.piecesSHA1Hashes = append(torrentInfo.piecesSHA1Hashes,
+			benPieces[i:i+20])
+	}
+
+	benLength, ok := benInfo["length"].(int64)
+	if !ok {
+		log.Fatalln(errors.New("unable to get length"))
+	}
+	if benLength < 1 || benLength > 1_000_000_000_000 {
+		log.Fatalln(errors.New("invaild length"))
+	}
+	torrentInfo.fileLength = int(benLength)
+
+	torrentInfo.isSingleFile = true
+
+	// fmt.Println(torrentInfo)
 
 	torrentInfoMu.Unlock()
 }
