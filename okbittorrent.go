@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/sha1"
 	"errors"
 	"log"
@@ -34,16 +35,12 @@ var torrentTrackers []string
 
 var torrentTrackersMu sync.Mutex
 
-func infoDictIsValid(map[string]any) bool {
-	return false
-}
-
 func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	torrentInfoMu.Lock()
 
 	benBuf, err := BencodeEncode(benInfo)
 	if err != nil {
-		log.Fatalln(errors.New("unable to encode info dictionary"))
+		log.Fatalln(errors.New("unable to encode info"))
 	}
 
 	benBufSHA1Sum := sha1.Sum(benBuf)
@@ -93,16 +90,33 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 
 	torrentInfo.isSingleFile = true
 
-	// fmt.Println(torrentInfo)
+	// TODO: Handle multiple files torrent
 
 	torrentInfoMu.Unlock()
+}
+
+func torrentTrackersFillFromFile(extraTrackersFilePath string) {
+	extraTrackersFileData, err := os.ReadFile(extraTrackersFilePath)
+	if err != nil {
+		log.Fatalln(errors.New("unable to read extra trackers file"))
+	}
+
+	torrentTrackersMu.Lock()
+
+	for t := range bytes.SplitSeq(extraTrackersFileData, []byte{0x0a}) {
+		if len(t) != 0 {
+			torrentTrackers = append(torrentTrackers, string(t))
+		}
+	}
+
+	torrentTrackersMu.Unlock()
 }
 
 func main() {
 	magneticLink := os.Args[1]
 	torrentFilePath := os.Args[2]
 	// downloadDirectoryPath := os.Args[3]
-	// extraTrackersFilePath := os.Args[4]
+	extraTrackersFilePath := os.Args[4]
 	// extraPeersFilePath := os.Args[5]
 
 	if magneticLink != "-" && torrentFilePath == "-" {
@@ -130,10 +144,14 @@ func main() {
 		benInfo, ok := benRoot["info"].(map[string]any)
 		if !ok {
 			log.Fatalln(
-				errors.New("unable to find info dictionary in torrent file"))
+				errors.New("unable to get info"))
 		}
 		torrentInfoFillFromBenInfo(benInfo)
 	} else {
 		log.Fatalln(errors.New("invalid arguments"))
+	}
+
+	if extraTrackersFilePath != "-" {
+		torrentTrackersFillFromFile(extraTrackersFilePath)
 	}
 }
