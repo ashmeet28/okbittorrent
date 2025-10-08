@@ -6,12 +6,12 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,6 +35,7 @@ var torrentInfo struct {
 var torrentInfoMu sync.Mutex
 
 type torrentPeer struct {
+	address string
 }
 
 var torrentPeers []torrentPeer
@@ -49,6 +50,21 @@ var peersFinderActiveTrackers []string
 var peersFinderActiveTrackersMu sync.Mutex
 
 var peersFinderMaxActiveTrackers int = 10
+
+func torrentPeersAdd(peerIpAddr string) {
+	torrentPeersMu.Lock()
+	alreadyHasAddress := false
+	for _, p := range torrentPeers {
+		if p.address == peerIpAddr {
+			alreadyHasAddress = true
+			break
+		}
+	}
+	if !alreadyHasAddress {
+		torrentPeers = append(torrentPeers, torrentPeer{address: peerIpAddr})
+	}
+	torrentPeersMu.Unlock()
+}
 
 func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	torrentInfoMu.Lock()
@@ -184,7 +200,35 @@ func peersFinderConnectTracker(trackerURL string) {
 		return
 	}
 
-	fmt.Println(string(body))
+	ben, extraData, err := BencodeDecode(body)
+	if len(extraData) != 0 || err != nil {
+		deleteTrackerURLFromActiveTrackers()
+		return
+	}
+
+	benRoot, ok := ben.(map[string]any)
+	if !ok {
+		deleteTrackerURLFromActiveTrackers()
+		return
+	}
+
+	benPeers, ok := benRoot["peers"].([]byte)
+	if !ok {
+		deleteTrackerURLFromActiveTrackers()
+		return
+	}
+
+	for i := 0; (i + 6) <= len(benPeers); i += 6 {
+		peerIPAddr := strconv.FormatInt(int64(benPeers[i]), 10) + "." +
+			strconv.FormatInt(int64(benPeers[i+1]), 10) + "." +
+			strconv.FormatInt(int64(benPeers[i+2]), 10) + "." +
+			strconv.FormatInt(int64(benPeers[i+3]), 10) + ":" +
+			strconv.FormatInt(
+				(int64(benPeers[i+4])*256)+int64(benPeers[i+5]), 10)
+
+		torrentPeersAdd(peerIPAddr)
+	}
+
 	deleteTrackerURLFromActiveTrackers()
 }
 
