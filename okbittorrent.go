@@ -31,7 +31,6 @@ var torrentInfo struct {
 		filePath   string
 	}
 }
-
 var torrentInfoMu sync.Mutex
 
 type torrentPeer struct {
@@ -39,32 +38,15 @@ type torrentPeer struct {
 }
 
 var torrentPeers []torrentPeer
-
 var torrentPeersMu sync.Mutex
 
 var torrentTrackers []string
-
 var torrentTrackersMu sync.Mutex
 
 var peersFinderActiveTrackers []string
 var peersFinderActiveTrackersMu sync.Mutex
 
 var peersFinderMaxActiveTrackers int = 10
-
-func torrentPeersAdd(peerIpAddr string) {
-	torrentPeersMu.Lock()
-	alreadyHasAddress := false
-	for _, p := range torrentPeers {
-		if p.address == peerIpAddr {
-			alreadyHasAddress = true
-			break
-		}
-	}
-	if !alreadyHasAddress {
-		torrentPeers = append(torrentPeers, torrentPeer{address: peerIpAddr})
-	}
-	torrentPeersMu.Unlock()
-}
 
 func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	torrentInfoMu.Lock()
@@ -226,7 +208,19 @@ func peersFinderConnectTracker(trackerURL string) {
 			strconv.FormatInt(
 				(int64(benPeers[i+4])*256)+int64(benPeers[i+5]), 10)
 
-		torrentPeersAdd(peerIPAddr)
+		torrentPeersMu.Lock()
+		torrentPeersAlreadyHasAddress := false
+		for _, p := range torrentPeers {
+			if p.address == peerIPAddr {
+				torrentPeersAlreadyHasAddress = true
+				break
+			}
+		}
+		if !torrentPeersAlreadyHasAddress {
+			torrentPeers = append(
+				torrentPeers, torrentPeer{address: peerIPAddr})
+		}
+		torrentPeersMu.Unlock()
 	}
 
 	deleteTrackerURLFromActiveTrackers()
