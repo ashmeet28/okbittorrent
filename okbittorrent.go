@@ -2,12 +2,22 @@ package main
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha1"
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"slices"
+	"strings"
 	"sync"
+	"time"
 )
+
+var torrentPeerId []byte
 
 var torrentInfo struct {
 	infoDictHash []byte
@@ -34,6 +44,11 @@ var torrentPeersMu sync.Mutex
 var torrentTrackers []string
 
 var torrentTrackersMu sync.Mutex
+
+var peersFinderActiveTrackers []string
+var peersFinderActiveTrackersMu sync.Mutex
+
+var peersFinderMaxActiveTrackers int = 10
 
 func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	torrentInfoMu.Lock()
@@ -112,12 +127,102 @@ func torrentTrackersFillFromFile(extraTrackersFilePath string) {
 	torrentTrackersMu.Unlock()
 }
 
+func peersFinderConnectTracker(trackerURL string) {
+	peersFinderActiveTrackersMu.Lock()
+	if slices.Contains(peersFinderActiveTrackers, trackerURL) {
+		peersFinderActiveTrackersMu.Unlock()
+		return
+	} else {
+		peersFinderActiveTrackers = append(peersFinderActiveTrackers,
+			trackerURL)
+		peersFinderActiveTrackersMu.Unlock()
+	}
+
+	deleteTrackerURLFromActiveTrackers := func() {
+		peersFinderActiveTrackersMu.Lock()
+
+		i := slices.Index(peersFinderActiveTrackers, trackerURL)
+		if i == -1 {
+			log.Fatalln(errors.New("expected tracker url in the active trackers slice"))
+		}
+		peersFinderActiveTrackers = append(
+			peersFinderActiveTrackers[:i], peersFinderActiveTrackers[i+1:]...)
+
+		peersFinderActiveTrackersMu.Unlock()
+	}
+
+	sliceToEscapedQuery := func(d []byte) string {
+		s := strings.ToUpper(hex.EncodeToString(d))
+		var es string
+		for i := 0; (i + 2) <= len(s); i += 2 {
+			es = es + "%" + s[i:i+2]
+		}
+		return es
+	}
+
+	torrentInfoMu.Lock()
+
+	res, err := http.Get(trackerURL +
+		"/?info_hash=" + sliceToEscapedQuery(torrentInfo.infoDictHash) +
+		"&peer_id=" + sliceToEscapedQuery(torrentPeerId))
+
+	torrentInfoMu.Unlock()
+
+	if err != nil {
+		deleteTrackerURLFromActiveTrackers()
+		return
+	}
+
+	body, err := io.ReadAll(res.Body)
+
+	if err := res.Body.Close(); err != nil {
+		deleteTrackerURLFromActiveTrackers()
+		return
+	}
+	if (res.StatusCode != http.StatusOK) || (err != nil) {
+		deleteTrackerURLFromActiveTrackers()
+		return
+	}
+
+	fmt.Println(string(body))
+	deleteTrackerURLFromActiveTrackers()
+}
+
+func peersFinderStart() {
+	nextTrackerIndex := 0
+
+	for {
+		torrentTrackersMu.Lock()
+		peersFinderActiveTrackersMu.Lock()
+
+		if nextTrackerIndex >= len(torrentTrackers) {
+			nextTrackerIndex = 0
+		}
+
+		if len(torrentTrackers) != 0 &&
+			len(peersFinderActiveTrackers) < peersFinderMaxActiveTrackers {
+			go peersFinderConnectTracker(torrentTrackers[nextTrackerIndex])
+			nextTrackerIndex++
+		}
+
+		torrentTrackersMu.Unlock()
+		peersFinderActiveTrackersMu.Unlock()
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
 func main() {
 	magneticLink := os.Args[1]
 	torrentFilePath := os.Args[2]
 	// downloadDirectoryPath := os.Args[3]
 	extraTrackersFilePath := os.Args[4]
 	// extraPeersFilePath := os.Args[5]
+
+	torrentPeerId = make([]byte, 20)
+	if _, err := rand.Read(torrentPeerId); err != nil {
+		log.Fatalln(errors.New("unable to get random bytes"))
+	}
 
 	if magneticLink != "-" && torrentFilePath == "-" {
 
@@ -154,4 +259,6 @@ func main() {
 	if extraTrackersFilePath != "-" {
 		torrentTrackersFillFromFile(extraTrackersFilePath)
 	}
+
+	peersFinderStart()
 }
