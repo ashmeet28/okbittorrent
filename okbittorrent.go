@@ -10,7 +10,6 @@ import (
 	"log"
 	"net/http"
 	"os"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,23 +29,29 @@ var torrentInfo struct {
 		fileLength int
 		filePath   string
 	}
+	pieces [][]byte
 }
 var torrentInfoMu sync.Mutex
 
 type torrentPeer struct {
-	address string
+	address  string
+	isActive bool
 }
 
 var torrentPeers []torrentPeer
 var torrentPeersMu sync.Mutex
 
-var torrentTrackers []string
+type torrentTracker struct {
+	address  string
+	isActive bool
+}
+
+var torrentTrackers []torrentTracker
 var torrentTrackersMu sync.Mutex
 
-var peersFinderActiveTrackers []string
-var peersFinderActiveTrackersMu sync.Mutex
-
 var peersFinderMaxActiveTrackers int = 10
+
+var torrentDownloaderMaxActivePeers int = 10
 
 func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	torrentInfoMu.Lock()
@@ -91,12 +96,20 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 		torrentInfo.pieceHashes = append(torrentInfo.pieceHashes,
 			benPieces[i:i+20])
 	}
+	torrentInfo.pieces = make([][]byte, len(torrentInfo.pieceHashes))
 
 	benLength, ok := benInfo["length"].(int64)
 	if !ok {
 		log.Fatalln(errors.New("unable to get length"))
 	}
 	if benLength < 1 || benLength > 1_000_000_000_000 {
+		log.Fatalln(errors.New("invalid length"))
+	}
+	if ((benLength < benPieceLength) && len(torrentInfo.pieceHashes) != 1) ||
+		((benLength%benPieceLength) == 0 &&
+			int(benLength/benPieceLength) != len(torrentInfo.pieceHashes)) ||
+		((benLength%benPieceLength) != 0 &&
+			(int(benLength/benPieceLength)+1) != len(torrentInfo.pieceHashes)) {
 		log.Fatalln(errors.New("invalid length"))
 	}
 	torrentInfo.fileLength = int(benLength)
@@ -116,9 +129,20 @@ func torrentTrackersFillFromFile(extraTrackersFilePath string) {
 
 	torrentTrackersMu.Lock()
 
-	for t := range bytes.SplitSeq(extraTrackersFileData, []byte{0x0a}) {
-		if len(t) != 0 {
-			torrentTrackers = append(torrentTrackers, string(t))
+	for trackerURL := range bytes.SplitSeq(extraTrackersFileData, []byte{0x0a}) {
+		if len(trackerURL) != 0 {
+			doesExists := false
+			for _, t := range torrentTrackers {
+				if t.address == string(trackerURL) {
+					doesExists = true
+					break
+				}
+			}
+			if !doesExists {
+				torrentTrackers = append(torrentTrackers,
+					torrentTracker{
+						address: string(trackerURL), isActive: false})
+			}
 		}
 	}
 
@@ -126,27 +150,20 @@ func torrentTrackersFillFromFile(extraTrackersFilePath string) {
 }
 
 func peersFinderConnectTracker(trackerURL string) {
-	peersFinderActiveTrackersMu.Lock()
-	if slices.Contains(peersFinderActiveTrackers, trackerURL) {
-		peersFinderActiveTrackersMu.Unlock()
-		return
-	} else {
-		peersFinderActiveTrackers = append(peersFinderActiveTrackers,
-			trackerURL)
-		peersFinderActiveTrackersMu.Unlock()
-	}
-
-	deleteTrackerURLFromActiveTrackers := func() {
-		peersFinderActiveTrackersMu.Lock()
-
-		i := slices.Index(peersFinderActiveTrackers, trackerURL)
-		if i == -1 {
-			log.Fatalln(errors.New("expected tracker url in the active trackers slice"))
+	deactivateTracker := func() {
+		torrentTrackersMu.Lock()
+		isActive := true
+		for i, t := range torrentTrackers {
+			if t.address == trackerURL {
+				torrentTrackers[i].isActive = false
+				isActive = false
+				break
+			}
 		}
-		peersFinderActiveTrackers = append(
-			peersFinderActiveTrackers[:i], peersFinderActiveTrackers[i+1:]...)
-
-		peersFinderActiveTrackersMu.Unlock()
+		if isActive {
+			log.Fatalln(errors.New("unable to deactivate tracker"))
+		}
+		torrentTrackersMu.Unlock()
 	}
 
 	sliceToEscapedQuery := func(d []byte) string {
@@ -167,36 +184,36 @@ func peersFinderConnectTracker(trackerURL string) {
 	torrentInfoMu.Unlock()
 
 	if err != nil {
-		deleteTrackerURLFromActiveTrackers()
+		deactivateTracker()
 		return
 	}
 
 	body, err := io.ReadAll(res.Body)
 
 	if err := res.Body.Close(); err != nil {
-		deleteTrackerURLFromActiveTrackers()
+		deactivateTracker()
 		return
 	}
 	if (res.StatusCode != http.StatusOK) || (err != nil) {
-		deleteTrackerURLFromActiveTrackers()
+		deactivateTracker()
 		return
 	}
 
 	ben, extraData, err := BencodeDecode(body)
 	if len(extraData) != 0 || err != nil {
-		deleteTrackerURLFromActiveTrackers()
+		deactivateTracker()
 		return
 	}
 
 	benRoot, ok := ben.(map[string]any)
 	if !ok {
-		deleteTrackerURLFromActiveTrackers()
+		deactivateTracker()
 		return
 	}
 
 	benPeers, ok := benRoot["peers"].([]byte)
 	if !ok {
-		deleteTrackerURLFromActiveTrackers()
+		deactivateTracker()
 		return
 	}
 
@@ -218,12 +235,14 @@ func peersFinderConnectTracker(trackerURL string) {
 		}
 		if !torrentPeersAlreadyHasAddress {
 			torrentPeers = append(
-				torrentPeers, torrentPeer{address: peerIPAddr})
+				torrentPeers,
+				torrentPeer{
+					address: peerIPAddr, isActive: false})
 		}
 		torrentPeersMu.Unlock()
 	}
 
-	deleteTrackerURLFromActiveTrackers()
+	deactivateTracker()
 }
 
 func peersFinderStart() {
@@ -231,20 +250,69 @@ func peersFinderStart() {
 
 	for {
 		torrentTrackersMu.Lock()
-		peersFinderActiveTrackersMu.Lock()
 
 		if nextTrackerIndex >= len(torrentTrackers) {
 			nextTrackerIndex = 0
 		}
 
-		if len(torrentTrackers) != 0 &&
-			len(peersFinderActiveTrackers) < peersFinderMaxActiveTrackers {
-			go peersFinderConnectTracker(torrentTrackers[nextTrackerIndex])
+		currentlyActiveTrackers := 0
+		for _, t := range torrentTrackers {
+			if t.isActive {
+				currentlyActiveTrackers++
+			}
+		}
+
+		if (len(torrentTrackers) != 0) &&
+			(currentlyActiveTrackers < peersFinderMaxActiveTrackers) {
+
+			if !torrentTrackers[nextTrackerIndex].isActive {
+				torrentTrackers[nextTrackerIndex].isActive = true
+				go peersFinderConnectTracker(
+					torrentTrackers[nextTrackerIndex].address)
+			}
 			nextTrackerIndex++
+
 		}
 
 		torrentTrackersMu.Unlock()
-		peersFinderActiveTrackersMu.Unlock()
+
+		time.Sleep(1 * time.Second)
+	}
+}
+
+func torrentDownloaderConnectPeer(peerIPAddr string) {
+
+}
+
+func torrentDownloaderStart() {
+	nextPeerIndex := 0
+
+	for {
+		torrentPeersMu.Lock()
+
+		if nextPeerIndex >= len(torrentPeers) {
+			nextPeerIndex = 0
+		}
+
+		currentlyActivePeers := 0
+		for _, p := range torrentPeers {
+			if p.isActive {
+				currentlyActivePeers++
+			}
+		}
+
+		if (len(torrentPeers) != 0) &&
+			(currentlyActivePeers < torrentDownloaderMaxActivePeers) {
+
+			if !torrentPeers[nextPeerIndex].isActive {
+				torrentPeers[nextPeerIndex].isActive = true
+				go torrentDownloaderConnectPeer(torrentPeers[nextPeerIndex].address)
+			}
+			nextPeerIndex++
+
+		}
+
+		torrentPeersMu.Unlock()
 
 		time.Sleep(1 * time.Second)
 	}
