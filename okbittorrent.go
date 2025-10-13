@@ -4,12 +4,16 @@ import (
 	"bytes"
 	"crypto/rand"
 	"crypto/sha1"
+	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -51,7 +55,7 @@ var torrentTrackersMu sync.Mutex
 
 var peersFinderMaxActiveTrackers int = 10
 
-var torrentDownloaderMaxActivePeers int = 10
+var torrentDownloaderMaxActivePeers int = 300
 
 func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	torrentInfoMu.Lock()
@@ -119,6 +123,26 @@ func torrentInfoFillFromBenInfo(benInfo map[string]any) {
 	// TODO: Handle multiple files torrent
 
 	torrentInfoMu.Unlock()
+}
+
+func torrentInfoGetPiecesBitfield() []byte {
+	torrentInfoMu.Lock()
+	bf := make([]byte, len(torrentInfo.pieces)/8)
+	if (len(torrentInfo.pieces) < 8) || ((len(torrentInfo.pieces) % 8) != 0) {
+		bf = append(bf, 0)
+	}
+	for i, p := range torrentInfo.pieces {
+		if len(p) != 0 {
+			if i == 0 {
+				bf[0] = bf[0] | (0b1000_0000 >> (i % 8))
+			} else {
+				bf[i/8] = bf[i/8] | (0b1000_0000 >> (i % 8))
+			}
+
+		}
+	}
+	torrentInfoMu.Unlock()
+	return bf
 }
 
 func torrentTrackersFillFromFile(extraTrackersFilePath string) {
@@ -276,12 +300,128 @@ func peersFinderStart() {
 
 		torrentTrackersMu.Unlock()
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
 func torrentDownloaderConnectPeer(peerIPAddr string) {
+	// fmt.Println("A: " + peerIPAddr)
+	deactivatePeer := func() {
+		torrentPeersMu.Lock()
+		isActive := true
+		for i, t := range torrentPeers {
+			if t.address == peerIPAddr {
+				torrentPeers[i].isActive = false
+				isActive = false
+				break
+			}
+		}
+		if isActive {
+			log.Fatalln(errors.New("unable to deactivate peer"))
+		}
+		torrentPeersMu.Unlock()
+		// fmt.Println("D: " + peerIPAddr)
+	}
 
+	conn, err := net.DialTimeout("tcp", peerIPAddr, time.Second*15)
+	if err != nil {
+		deactivatePeer()
+		return
+	}
+	// fmt.Println("C: " + peerIPAddr)
+
+	w := func(b []byte) bool {
+		conn.SetDeadline(time.Now().Add(time.Minute * 15))
+		n, err := conn.Write(b)
+		if err != nil || n != len(b) {
+			return false
+		}
+		return true
+	}
+
+	r := func() (byte, bool) {
+		b := []byte{0}
+		conn.SetDeadline(time.Now().Add(time.Minute * 5))
+		n, _ := conn.Read(b)
+		if n == 1 {
+			return b[0], true
+		} else {
+			return b[0], false
+
+		}
+	}
+
+	wMsgUnchock := func() bool {
+		return w([]byte{0, 0, 0, 1, 1})
+	}
+
+	wMsgInterested := func() bool {
+		return w([]byte{0, 0, 0, 1, 2})
+	}
+
+	wMsgRequest := func() bool {
+		var wBuf []byte
+		wBuf = binary.BigEndian.AppendUint32(wBuf, 13)
+		wBuf = append(wBuf, 6)
+		wBuf = binary.BigEndian.AppendUint32(wBuf, 10)
+		wBuf = binary.BigEndian.AppendUint32(wBuf, 0)
+		torrentInfoMu.Lock()
+		wBuf = binary.BigEndian.AppendUint32(wBuf,
+			uint32(torrentInfo.pieceLength))
+		torrentInfoMu.Unlock()
+		return w(wBuf)
+	}
+
+	wMsgBitfield := func() bool {
+		var wBuf []byte
+		wBuf = binary.BigEndian.AppendUint32(wBuf,
+			uint32(len(torrentInfoGetPiecesBitfield())+1))
+		wBuf = append(wBuf, 5)
+		wBuf = append(wBuf, torrentInfoGetPiecesBitfield()...)
+		return w(wBuf)
+	}
+
+	var wBuf []byte
+	wBuf = []byte{19}
+	wBuf = append(wBuf, []byte("BitTorrent protocol")...)
+	wBuf = append(wBuf, make([]byte, 8)...)
+	torrentInfoMu.Lock()
+	wBuf = append(wBuf, torrentInfo.infoDictHash...)
+	torrentInfoMu.Unlock()
+	wBuf = append(wBuf, torrentPeerId...)
+
+	if ok := w(wBuf); !ok {
+		deactivatePeer()
+		return
+	}
+
+	wMsgBitfield()
+	wMsgUnchock()
+	wMsgInterested()
+	wMsgRequest()
+
+	var rBuf []byte
+	for len(rBuf) < len(wBuf) {
+		b, ok := r()
+		if !ok {
+			deactivatePeer()
+			return
+		}
+		rBuf = append(rBuf, b)
+	}
+
+	if !(slices.Equal(wBuf[:20], rBuf[:20]) &&
+		slices.Equal(wBuf[28:36], rBuf[28:36])) {
+		deactivatePeer()
+		return
+	}
+	fmt.Println("H: " + peerIPAddr)
+
+	for b, ok := r(); ok; {
+		fmt.Println(b)
+		time.Sleep(1 * time.Second)
+	}
+	deactivatePeer()
 }
 
 func torrentDownloaderStart() {
@@ -306,7 +446,8 @@ func torrentDownloaderStart() {
 
 			if !torrentPeers[nextPeerIndex].isActive {
 				torrentPeers[nextPeerIndex].isActive = true
-				go torrentDownloaderConnectPeer(torrentPeers[nextPeerIndex].address)
+				go torrentDownloaderConnectPeer(
+					torrentPeers[nextPeerIndex].address)
 			}
 			nextPeerIndex++
 
@@ -314,7 +455,7 @@ func torrentDownloaderStart() {
 
 		torrentPeersMu.Unlock()
 
-		time.Sleep(1 * time.Second)
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 
@@ -366,5 +507,6 @@ func main() {
 		torrentTrackersFillFromFile(extraTrackersFilePath)
 	}
 
-	peersFinderStart()
+	go peersFinderStart()
+	torrentDownloaderStart()
 }
